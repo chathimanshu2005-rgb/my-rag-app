@@ -167,4 +167,51 @@ else:
                         q_vec = np.array(q_emb.values if hasattr(q_emb, 'values') else q_emb, dtype=np.float32)
                         
                         sims = []
-                        for emb in st.session_state
+                        for emb in st.session_state.embeddings:
+                            sim = np.dot(q_vec, emb) / (np.linalg.norm(q_vec) * np.linalg.norm(emb))
+                            sims.append(sim)
+                        
+                        top_idx = np.argsort(sims)[-3:][::-1]
+                        context = "\n\n---\n\n".join([st.session_state.chunks[i] for i in top_idx])
+                        
+                        prompt = f"""Answer using ONLY the context below. If not found, say "I don't have that information."
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:"""
+                        
+                        ans = client.models.generate_content(
+                            model="gemini-2.0-flash",
+                            contents=prompt
+                        )
+                        
+                        st.markdown("### 💡 Answer")
+                        st.info(ans.text)
+                        
+                        with st.expander("📄 Source chunks"):
+                            for i, idx in enumerate(top_idx):
+                                st.markdown(f"**Chunk {i+1}** (score: {sims[idx]:.3f})")
+                                st.text(st.session_state.chunks[idx][:600])
+                    
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                            st.error("""
+                            ⏳ **Rate Limit Reached!**
+                            
+                            The free Gemini tier allows about **15 requests per minute**.
+                            You just hit that limit.
+                            
+                            **What to do:**
+                            1. Wait **30-60 seconds**
+                            2. Click your question again
+                            3. It will work!
+                            
+                            **Tip:** For big PDFs, the app makes many embedding calls. 
+                            Wait a minute after "Process Documents" before asking questions.
+                            """)
+                        else:
+                            st.error(f"Q&A Error: {e}")
