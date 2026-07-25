@@ -1,8 +1,8 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from pypdf import PdfReader
 import numpy as np
-import faiss
 
 # ========== PAGE SETUP ==========
 st.set_page_config(page_title="My RAG App", page_icon="📚", layout="centered")
@@ -11,50 +11,70 @@ st.title("📚 My Free RAG Application")
 st.markdown("""
 **Upload PDF documents → Ask questions → Get AI answers based ONLY on your documents**
 
-*Built with 100% free tools: Streamlit + Gemini API + FAISS*
+*Built with 100% free tools: Streamlit + Gemini API + Python*
 """)
 
 # ========== GEMINI SETUP ==========
-# For local: use environment variable or .env
-# For Streamlit Cloud: uses st.secrets
 import os
 
+# Try to get API key from multiple sources
+api_key = None
+
 try:
-    api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    # Source 1: Streamlit Cloud secrets
+    api_key = st.secrets.get("GEMINI_API_KEY", None)
+except Exception:
+    pass
+
+# Source 2: Environment variable (for local)
+if not api_key:
+    api_key = os.getenv("GEMINI_API_KEY")
+
+# Source 3: Direct input (emergency fallback)
+if not api_key:
+    st.warning("⚠️ Gemini API Key not found in secrets!")
+    api_key = st.text_input("Paste your Gemini API Key here (for testing only):", type="password")
     if not api_key:
-        st.error("⚠️ Gemini API Key not found!")
         st.info("""
-        **To fix this:**
-        - **Local**: Create a `.env` file with `GEMINI_API_KEY=your_key`
-        - **Streamlit Cloud**: Go to app settings → Secrets → Add `GEMINI_API_KEY`
+        **To fix this permanently:**
+        1. Go to your app on [share.streamlit.io](https://share.streamlit.io)
+        2. Click ⋮ → **Settings** → **Secrets**
+        3. Add exactly: `GEMINI_API_KEY = "your-key-here"`
+        4. Click **Save** and **Reboot**
         """)
         st.stop()
-    genai.configure(api_key=api_key)
+
+# Initialize the NEW google.genai client
+try:
+    client = genai.Client(api_key=api_key)
+    st.success("✅ Gemini API connected successfully!")
 except Exception as e:
-    st.error(f"Error configuring Gemini: {e}")
+    st.error(f"❌ Error connecting to Gemini: {e}")
     st.stop()
 
 # ========== HELPER FUNCTIONS ==========
 
-def get_embedding(text: str) -> np.ndarray:
-    """Convert text to vector using Gemini Embedding (FREE tier)"""
+def get_embedding(text: str):
+    """Convert text to vector using Gemini Embedding (FREE tier) using NEW SDK"""
     try:
-        # Gemini has a content limit, so we truncate safely
         safe_text = text[:8000] if len(text) > 8000 else text
-        result = genai.embed_content(
-            model="models/embedding-001",
-            content=safe_text,
-            task_type="retrieval_document"
+        result = client.models.embed_content(
+            model="text-embedding-004",
+            contents=[safe_text]
         )
-        return np.array(result['embedding'], dtype=np.float32)
+        # New API returns embeddings differently
+        return np.array(result.embeddings[0].values, dtype=np.float32)
     except Exception as e:
         st.error(f"Embedding error: {e}")
         return None
 
+def cosine_similarity(a, b):
+    """Calculate similarity between two vectors"""
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
 def get_answer(question: str, context: str) -> str:
-    """Ask Gemini Flash to answer based on retrieved context"""
+    """Ask Gemini Flash to answer based on retrieved context using NEW SDK"""
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
         prompt = f"""You are a helpful study assistant. Answer the question using ONLY the information provided in the context below.
 If the answer is not found in the context, say: "I don't have enough information in the uploaded documents to answer this."
 
@@ -67,13 +87,16 @@ If the answer is not found in the context, say: "I don't have enough information
 === YOUR ANSWER ===
 Provide a clear, accurate, and concise answer."""
 
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         return f"❌ Error generating answer: {e}"
 
 def split_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list:
-    """Split long text into overlapping chunks for better retrieval"""
+    """Split long text into overlapping chunks"""
     if not text or len(text) < chunk_size:
         return [text] if text else []
 
@@ -84,7 +107,6 @@ def split_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list:
     while start < text_len:
         end = min(start + chunk_size, text_len)
 
-        # Try to break at a natural boundary (period, newline, or space)
         if end < text_len:
             for sep in ['. ', '\n', ' ']:
                 pos = text.rfind(sep, start, end)
@@ -93,15 +115,15 @@ def split_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list:
                     break
 
         chunk = text[start:end].strip()
-        if chunk and len(chunk) > 50:  # Ignore tiny fragments
+        if chunk and len(chunk) > 50:
             chunks.append(chunk)
 
-        start = end - overlap  # Overlap for continuity
+        start = end - overlap
 
     return chunks
 
-def extract_pdf_text(pdf_file) -> str:
-    """Extract text from uploaded PDF file"""
+def extract_pdf_text(pdf_file):
+    """Extract text from uploaded PDF file + return page count"""
     try:
         reader = PdfReader(pdf_file)
         text_parts = []
@@ -109,14 +131,15 @@ def extract_pdf_text(pdf_file) -> str:
             page_text = page.extract_text()
             if page_text and page_text.strip():
                 text_parts.append(f"[Page {i+1}]\n{page_text}")
-        return "\n\n".join(text_parts)
+        full_text = "\n\n".join(text_parts)
+        page_count = len(reader.pages)
+        return full_text, page_count
     except Exception as e:
         st.error(f"Error reading {pdf_file.name}: {e}")
-        return ""
+        return "", 0
 
 # ========== MAIN APP ==========
 
-# File uploader
 uploaded_files = st.file_uploader(
     "📄 Upload your PDF files (you can select multiple)",
     type=['pdf'],
@@ -132,7 +155,7 @@ if not uploaded_files:
     1. 📄 You upload documents
     2. 🔍 The app finds the most relevant parts
     3. 🤖 AI reads those parts and answers your question
-    4. ✅ You get accurate answers based on YOUR documents, not random internet knowledge
+    4. ✅ You get accurate answers based on YOUR documents
     """)
     st.stop()
 
@@ -140,19 +163,18 @@ if not uploaded_files:
 if st.button("🚀 Process Documents", type="primary"):
     with st.spinner("🔍 Reading and analyzing your documents..."):
 
-        # Step 1: Extract text from all PDFs
         all_chunks = []
         file_stats = []
 
         progress = st.progress(0)
         for idx, pdf_file in enumerate(uploaded_files):
-            text = extract_pdf_text(pdf_file)
+            text, page_count = extract_pdf_text(pdf_file)
             if text:
                 chunks = split_text(text)
                 all_chunks.extend(chunks)
                 file_stats.append({
                     'name': pdf_file.name,
-                    'pages': len(PdfReader(pdf_file).pages),
+                    'pages': page_count,
                     'chunks': len(chunks)
                 })
             progress.progress((idx + 1) / len(uploaded_files))
@@ -161,8 +183,8 @@ if st.button("🚀 Process Documents", type="primary"):
             st.error("❌ Could not extract text from the uploaded PDFs. Try different files.")
             st.stop()
 
-        # Step 2: Create embeddings (vectors) for each chunk
-        st.write(f"🧠 Creating {len(all_chunks)} embeddings... (this may take a moment)")
+        # Create embeddings for each chunk
+        st.write(f"🧠 Creating {len(all_chunks)} embeddings...")
         embed_progress = st.progress(0)
         embeddings = []
 
@@ -173,18 +195,11 @@ if st.button("🚀 Process Documents", type="primary"):
             embed_progress.progress((i + 1) / len(all_chunks))
 
         if not embeddings:
-            st.error("❌ Failed to create embeddings. Check your API key.")
+            st.error("❌ Failed to create embeddings. Check your API key and internet connection.")
             st.stop()
 
-        # Step 3: Build FAISS vector index (in-memory, fast & free)
-        embeddings = np.array(embeddings)
-        dimension = embeddings.shape[1]  # Usually 768 for Gemini embeddings
-
-        index = faiss.IndexFlatL2(dimension)  # L2 = Euclidean distance
-        index.add(embeddings)
-
-        # Store in session state so it persists while app is running
-        st.session_state['index'] = index
+        # Store in session state
+        st.session_state['embeddings'] = embeddings
         st.session_state['chunks'] = all_chunks
         st.session_state['file_stats'] = file_stats
         st.session_state['ready'] = True
@@ -205,10 +220,10 @@ with st.sidebar:
     st.markdown("""
     ### 🛠️ Tech Stack
     - **UI**: Streamlit (Free)
-    - **AI Model**: Gemini 2.0 Flash (Free tier)
-    - **Embeddings**: Gemini Embedding (Free tier)
-    - **Vector DB**: FAISS (Open source)
-    - **PDF Reader**: PyPDF (Open source)
+    - **AI**: Gemini 2.0 Flash (Free tier)
+    - **Embeddings**: Gemini text-embedding-004 (Free tier)
+    - **Search**: Pure Python (No FAISS needed!)
+    - **PDF**: PyPDF (Open source)
     """)
 
 # Question & Answer section
@@ -218,7 +233,7 @@ if st.session_state.get('ready', False):
 
     question = st.text_input(
         "Type your question here:",
-        placeholder="e.g., What are the main findings? Who is the author? What does chapter 3 say about...?"
+        placeholder="e.g., What are the main findings? Who is the author?"
     )
 
     if question:
@@ -228,27 +243,32 @@ if st.session_state.get('ready', False):
             if q_emb is None:
                 st.stop()
 
-            q_emb = np.array([q_emb])
+            # 2. Find top 3 most similar chunks using cosine similarity
+            similarities = []
+            for emb in st.session_state['embeddings']:
+                sim = cosine_similarity(q_emb, emb)
+                similarities.append(sim)
 
-            # 2. Search FAISS for top 3 most similar chunks
-            k = min(3, len(st.session_state['chunks']))
-            distances, indices = st.session_state['index'].search(q_emb, k)
+            # Get indices of top 3
+            top_indices = np.argsort(similarities)[-3:][::-1]
 
             # 3. Retrieve the actual text chunks
-            relevant_chunks = [st.session_state['chunks'][i] for i in indices[0]]
+            relevant_chunks = [st.session_state['chunks'][i] for i in top_indices]
             context = "\n\n---\n\n".join(relevant_chunks)
 
-            # 4. Ask Gemini to answer using only the retrieved context
+            # 4. Ask Gemini to answer
             answer = get_answer(question, context)
 
             # 5. Display results
             st.markdown("### 💡 Answer")
             st.info(answer)
 
-            # Show source chunks (expandable)
             with st.expander("📄 View source text chunks used to generate this answer"):
-                for i, (chunk, dist) in enumerate(zip(relevant_chunks, distances[0])):
-                    st.markdown(f"**Relevant Chunk {i+1}** *(relevance score: {dist:.2f})*")
+                for i, idx in enumerate(top_indices):
+                    chunk = st.session_state['chunks'][idx]
+                    score = similarities[idx]
+                    st.markdown(f"**Relevant Chunk {i+1}** *(similarity: {score:.3f})*")
                     st.text_area(f"chunk_{i}", chunk[:800] + ("..." if len(chunk) > 800 else ""), 
                                 height=120, label_visibility="collapsed")
                     st.divider()
+
