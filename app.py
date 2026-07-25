@@ -1,6 +1,5 @@
 import streamlit as st
 from google import genai
-from google.genai import types
 from pypdf import PdfReader
 import numpy as np
 
@@ -8,62 +7,80 @@ import numpy as np
 st.set_page_config(page_title="My RAG App", page_icon="📚", layout="centered")
 
 st.title("📚 My Free RAG Application")
-st.markdown("""
-**Upload PDF documents → Ask questions → Get AI answers based ONLY on your documents**
+st.markdown("**Upload PDF documents → Ask questions → Get AI answers based ONLY on your documents**")
 
-*Built with 100% free tools: Streamlit + Gemini API + Python*
-""")
-
-# ========== GEMINI SETUP ==========
+# ========== GEMINI SETUP (Bulletproof) ==========
 import os
 
-# Try to get API key from multiple sources
 api_key = None
+client = None
 
+# Try multiple ways to get the API key
 try:
-    # Source 1: Streamlit Cloud secrets
     api_key = st.secrets.get("GEMINI_API_KEY", None)
 except Exception:
     pass
 
-# Source 2: Environment variable (for local)
 if not api_key:
     api_key = os.getenv("GEMINI_API_KEY")
 
-# Source 3: Direct input (emergency fallback)
+# If no key, show setup page instead of crashing
 if not api_key:
-    st.warning("⚠️ Gemini API Key not found in secrets!")
-    api_key = st.text_input("Paste your Gemini API Key here (for testing only):", type="password")
-    if not api_key:
-        st.info("""
-        **To fix this permanently:**
-        1. Go to your app on [share.streamlit.io](https://share.streamlit.io)
-        2. Click ⋮ → **Settings** → **Secrets**
-        3. Add exactly: `GEMINI_API_KEY = "your-key-here"`
-        4. Click **Save** and **Reboot**
-        """)
-        st.stop()
+    st.error("⚠️ Gemini API Key Not Found")
+    st.markdown("""
+    ### 🔧 Setup Required
 
-# Initialize the NEW google.genai client
+    Your app needs a Gemini API key to work. Here's how to add it:
+
+    **Option 1: Streamlit Cloud (Recommended)**
+    1. Go to [share.streamlit.io](https://share.streamlit.io)
+    2. Click the **⋮ (three dots)** next to your app → **Settings**
+    3. Click the **Secrets** tab
+    4. Paste exactly this line:
+    ```
+    GEMINI_API_KEY = "your-api-key-here"
+    ```
+    5. Click **Save**, then click **Reboot**
+
+    **Option 2: Get a Free API Key**
+    - Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
+    - Click "Create API Key"
+    - Copy and paste it above
+    """)
+
+    # Show a demo of what the app looks like
+    st.divider()
+    st.info("👇 This is what your app will look like once the API key is added:")
+    st.image("https://streamlit.io/images/brand/streamlit-logo-secondary-colormark-darktext.png", width=200)
+    st.stop()
+
+# Initialize client with error handling
 try:
     client = genai.Client(api_key=api_key)
-    st.success("✅ Gemini API connected successfully!")
+    st.success("✅ Connected to Gemini API!")
 except Exception as e:
-    st.error(f"❌ Error connecting to Gemini: {e}")
+    st.error(f"❌ Failed to connect to Gemini: {e}")
+    st.info("Please check that your API key is correct and active at https://aistudio.google.com/app/apikey")
     st.stop()
 
 # ========== HELPER FUNCTIONS ==========
 
 def get_embedding(text: str):
-    """Convert text to vector using Gemini Embedding (FREE tier) using NEW SDK"""
+    """Convert text to vector using Gemini Embedding"""
     try:
         safe_text = text[:8000] if len(text) > 8000 else text
         result = client.models.embed_content(
-            model="text-embedding-004",
+            model="gemini-embedding-exp-03-07",
             contents=[safe_text]
         )
-        # New API returns embeddings differently
-        return np.array(result.embeddings[0].values, dtype=np.float32)
+        # Handle different response formats
+        if hasattr(result, 'embeddings') and result.embeddings:
+            emb = result.embeddings[0]
+            if hasattr(emb, 'values'):
+                return np.array(emb.values, dtype=np.float32)
+            else:
+                return np.array(emb, dtype=np.float32)
+        return None
     except Exception as e:
         st.error(f"Embedding error: {e}")
         return None
@@ -73,7 +90,7 @@ def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 def get_answer(question: str, context: str) -> str:
-    """Ask Gemini Flash to answer based on retrieved context using NEW SDK"""
+    """Ask Gemini Flash to answer based on retrieved context"""
     try:
         prompt = f"""You are a helpful study assistant. Answer the question using ONLY the information provided in the context below.
 If the answer is not found in the context, say: "I don't have enough information in the uploaded documents to answer this."
@@ -221,8 +238,8 @@ with st.sidebar:
     ### 🛠️ Tech Stack
     - **UI**: Streamlit (Free)
     - **AI**: Gemini 2.0 Flash (Free tier)
-    - **Embeddings**: Gemini text-embedding-004 (Free tier)
-    - **Search**: Pure Python (No FAISS needed!)
+    - **Embeddings**: Gemini (Free tier)
+    - **Search**: Pure Python
     - **PDF**: PyPDF (Open source)
     """)
 
@@ -243,32 +260,32 @@ if st.session_state.get('ready', False):
             if q_emb is None:
                 st.stop()
 
-            # 2. Find top 3 most similar chunks using cosine similarity
+            # 2. Find top 3 most similar chunks
             similarities = []
             for emb in st.session_state['embeddings']:
                 sim = cosine_similarity(q_emb, emb)
                 similarities.append(sim)
 
-            # Get indices of top 3
             top_indices = np.argsort(similarities)[-3:][::-1]
 
-            # 3. Retrieve the actual text chunks
+            # 3. Retrieve chunks
             relevant_chunks = [st.session_state['chunks'][i] for i in top_indices]
             context = "\n\n---\n\n".join(relevant_chunks)
 
-            # 4. Ask Gemini to answer
+            # 4. Get answer
             answer = get_answer(question, context)
 
-            # 5. Display results
+            # 5. Display
             st.markdown("### 💡 Answer")
             st.info(answer)
 
-            with st.expander("📄 View source text chunks used to generate this answer"):
+            with st.expander("📄 View source text chunks"):
                 for i, idx in enumerate(top_indices):
                     chunk = st.session_state['chunks'][idx]
                     score = similarities[idx]
-                    st.markdown(f"**Relevant Chunk {i+1}** *(similarity: {score:.3f})*")
-                    st.text_area(f"chunk_{i}", chunk[:800] + ("..." if len(chunk) > 800 else ""), 
+                    st.markdown(f"**Chunk {i+1}** *(score: {score:.3f})*")
+                    st.text_area(f"c{i}", chunk[:800] + ("..." if len(chunk) > 800 else ""), 
                                 height=120, label_visibility="collapsed")
                     st.divider()
+
 
