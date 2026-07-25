@@ -94,8 +94,9 @@ else:
                             status.write(f"Embedding chunk {i+1}/{len(all_chunks)}...")
                             chunk_text = chunk[:8000]
                             
+                            # ========== CORRECTED: Use gemini-embedding-2 ==========
                             result = client.models.embed_content(
-                                model="text-embedding-004",
+                                model="gemini-embedding-2",
                                 contents=[chunk_text]
                             )
                             
@@ -129,13 +130,17 @@ else:
                 with st.spinner("Thinking..."):
                     try:
                         q_text = question[:8000]
+                        
+                        # ========== CORRECTED: Use gemini-embedding-2 for query too ==========
                         q_res = client.models.embed_content(
-                            model="text-embedding-004",
+                            model="gemini-embedding-2",
                             contents=[q_text]
                         )
+                        
                         q_emb = q_res.embeddings[0]
                         q_vec = np.array(q_emb.values if hasattr(q_emb, 'values') else q_emb, dtype=np.float32)
                         
+                        # Find top 3 similar chunks
                         sims = []
                         for emb in st.session_state.embeddings:
                             sim = np.dot(q_vec, emb) / (np.linalg.norm(q_vec) * np.linalg.norm(emb))
@@ -144,6 +149,7 @@ else:
                         top_idx = np.argsort(sims)[-3:][::-1]
                         context = "\n\n---\n\n".join([st.session_state.chunks[i] for i in top_idx])
                         
+                        # Generate answer
                         prompt = f"""Answer using ONLY the context below. If not found, say "I don't have that information."
 
 Context:
