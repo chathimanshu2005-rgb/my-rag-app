@@ -1,244 +1,250 @@
 import streamlit as st
-from google import genai
-from pypdf import PdfReader
+
+st.set_page_config(page_title="My RAG App", page_icon="📚", layout="centered")
+st.title("📚 My Free RAG Application")
+
+# ========== SAFE IMPORTS ==========
+import os
 import numpy as np
 
-# ========== PAGE SETUP ==========
-st.set_page_config(page_title="My RAG App", page_icon="📚", layout="centered")
+# Try importing google-genai safely
+genai_import_error = None
+try:
+    from google import genai
+except Exception as e:
+    genai_import_error = str(e)
 
-st.title("📚 My Free RAG Application")
-st.markdown("**Upload PDF documents → Ask questions → Get AI answers based ONLY on your documents**")
+# Try importing pypdf safely
+pypdf_import_error = None
+try:
+    from pypdf import PdfReader
+except Exception as e:
+    pypdf_import_error = str(e)
 
-# ========== GEMINI SETUP (NO st.stop() ANYWHERE) ==========
-import os
-
+# ========== API KEY ==========
 api_key = None
 client = None
-api_status = "❌ Not connected"
+api_error = None
 
-# Try to get API key - very defensive
 try:
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
-except Exception:
-    pass
+except Exception as e:
+    api_error = f"Secrets error: {e}"
 
 if not api_key:
     api_key = os.getenv("GEMINI_API_KEY")
 
-if api_key:
+if api_key and genai_import_error is None:
     try:
         client = genai.Client(api_key=api_key)
-        api_status = "✅ Connected"
     except Exception as e:
-        api_status = f"❌ Connection failed: {e}"
-else:
-    api_status = "❌ API Key missing"
+        api_error = f"Client creation failed: {e}"
 
-# Show API status in sidebar
+# ========== SIDEBAR STATUS ==========
 with st.sidebar:
-    st.header("🔌 API Status")
-    st.write(api_status)
+    st.header("🔌 System Status")
+
+    if genai_import_error:
+        st.error(f"❌ google-genai import failed: {genai_import_error}")
+    else:
+        st.success("✅ google-genai imported")
+
+    if pypdf_import_error:
+        st.error(f"❌ pypdf import failed: {pypdf_import_error}")
+    else:
+        st.success("✅ pypdf imported")
+
+    if api_key:
+        st.success(f"✅ API key found ({api_key[:8]}...)")
+    else:
+        st.error("❌ API key missing")
+
+    if client:
+        st.success("✅ Gemini client ready")
+    elif api_key and genai_import_error is None:
+        st.error(f"❌ Gemini client failed: {api_error}")
 
     if not api_key:
         st.markdown("""
-        **Add your API key:**
+        **How to add API key:**
         1. Go to [share.streamlit.io](https://share.streamlit.io)
-        2. Click ⋮ → **Settings** → **Secrets**
-        3. Add: `GEMINI_API_KEY = "your-key"`
-        4. Click **Save** and **Reboot**
+        2. Click ⋮ → Settings → Secrets
+        3. Paste exactly:
+        ```
+        GEMINI_API_KEY = "your-key-here"
+        ```
+        4. Save & Reboot
         """)
 
-    st.divider()
-    st.markdown("""
-    ### 🛠️ Tech Stack
-    - **UI**: Streamlit (Free)
-    - **AI**: Gemini 2.0 Flash (Free tier)
-    - **Embeddings**: Gemini (Free tier)
-    - **Search**: Pure Python
-    - **PDF**: PyPDF
-    """)
+# ========== MAIN APP ==========
 
-# If no API key, show setup page and RETURN (no st.stop!)
-if not client:
-    st.warning("⚠️ Please add your Gemini API key in the sidebar instructions above.")
-    st.info("👇 Once added, this page will show the full RAG app.")
-    st.markdown("""
-    ### 💡 What is RAG?
-    **RAG** = **R**etrieval **A**ugmented **G**eneration
+# If anything is broken, show diagnostic page
+if genai_import_error or pypdf_import_error or not client:
+    st.warning("⚠️ App is in diagnostic mode — some features are disabled.")
 
-    1. 📄 You upload documents  
-    2. 🔍 The app finds the most relevant parts  
-    3. 🤖 AI reads those parts and answers your question  
-    4. ✅ You get accurate answers based on YOUR documents
-    """)
-    # END OF SCRIPT - no st.stop(), just natural end
+    if genai_import_error:
+        st.error("**google-genai failed to import.** This usually means:")
+        st.markdown("""
+        - Your `requirements.txt` has the wrong package name
+        - It should say: `google-genai>=1.0.0` (NOT `google-generativeai`)
+        """)
+
+    if not api_key:
+        st.error("**No API key found.** Check Streamlit Cloud Secrets.")
+
+    if api_error and api_key:
+        st.error(f"**API connection failed:** {api_error}")
+
+    st.info("Fix the issues above, then reboot the app.")
+
+    # Still show the uploader so they can test PDF reading
+    if pypdf_import_error is None:
+        st.divider()
+        st.subheader("📄 PDF Test (no AI needed)")
+        test_pdf = st.file_uploader("Upload a PDF to test extraction:", type=['pdf'])
+        if test_pdf:
+            try:
+                reader = PdfReader(test_pdf)
+                text = "\n".join([p.extract_text() or "" for p in reader.pages])
+                st.success(f"✅ Extracted {len(text)} characters from {len(reader.pages)} pages")
+                st.text(text[:500] + "...")
+            except Exception as e:
+                st.error(f"PDF read failed: {e}")
+
 else:
-    # ========== MAIN APP (only runs if API key works) ==========
-
+    # ========== FULL RAG APP ==========
     uploaded_files = st.file_uploader(
-        "📄 Upload your PDF files (you can select multiple)",
+        "📄 Upload PDF files",
         type=['pdf'],
         accept_multiple_files=True
     )
 
     if not uploaded_files:
-        st.info("👆 **Get started:** Upload one or more PDF files above")
+        st.info("👆 Upload PDF files to get started")
+        st.markdown("""
+        ### How it works:
+        1. Upload your PDF documents
+        2. Click "Process Documents"
+        3. Ask questions — answers come from YOUR documents only
+        """)
     else:
         if st.button("🚀 Process Documents", type="primary"):
-            with st.spinner("🔍 Reading and analyzing your documents..."):
-
+            with st.spinner("Processing..."):
                 all_chunks = []
                 file_stats = []
 
-                progress = st.progress(0)
-                for idx, pdf_file in enumerate(uploaded_files):
+                for pdf_file in uploaded_files:
                     try:
                         reader = PdfReader(pdf_file)
                         text_parts = []
                         for i, page in enumerate(reader.pages):
-                            page_text = page.extract_text()
-                            if page_text and page_text.strip():
-                                text_parts.append(f"[Page {i+1}]\n{page_text}")
+                            txt = page.extract_text()
+                            if txt:
+                                text_parts.append(f"[Page {i+1}]\n{txt}")
+
                         full_text = "\n\n".join(text_parts)
-                        page_count = len(reader.pages)
+                        pages = len(reader.pages)
 
-                        if full_text:
-                            # Split into chunks
-                            chunks = []
-                            start = 0
-                            text_len = len(full_text)
-                            chunk_size = 1000
-                            overlap = 150
+                        # Split into chunks
+                        chunks = []
+                        start = 0
+                        while start < len(full_text):
+                            end = min(start + 1000, len(full_text))
+                            chunk = full_text[start:end].strip()
+                            if len(chunk) > 50:
+                                chunks.append(chunk)
+                            start = end - 150 if end < len(full_text) else end
 
-                            while start < text_len:
-                                end = min(start + chunk_size, text_len)
-                                if end < text_len:
-                                    for sep in ['. ', '\n', ' ']:
-                                        pos = full_text.rfind(sep, start, end)
-                                        if pos != -1:
-                                            end = pos + len(sep)
-                                            break
-                                chunk = full_text[start:end].strip()
-                                if chunk and len(chunk) > 50:
-                                    chunks.append(chunk)
-                                start = end - overlap
-
-                            all_chunks.extend(chunks)
-                            file_stats.append({
-                                'name': pdf_file.name,
-                                'pages': page_count,
-                                'chunks': len(chunks)
-                            })
+                        all_chunks.extend(chunks)
+                        file_stats.append({"name": pdf_file.name, "pages": pages, "chunks": len(chunks)})
                     except Exception as e:
-                        st.error(f"Error reading {pdf_file.name}: {e}")
-
-                    progress.progress((idx + 1) / len(uploaded_files))
+                        st.error(f"Error with {pdf_file.name}: {e}")
 
                 if not all_chunks:
-                    st.error("❌ Could not extract text from PDFs. Try text-based PDFs (not scanned images).")
+                    st.error("No text extracted. Try text-based PDFs.")
                 else:
                     # Create embeddings
-                    st.write(f"🧠 Creating {len(all_chunks)} embeddings...")
-                    embed_progress = st.progress(0)
                     embeddings = []
+                    emb_progress = st.progress(0)
+                    status = st.empty()
 
                     for i, chunk in enumerate(all_chunks):
                         try:
-                            safe_text = chunk[:8000] if len(chunk) > 8000 else chunk
+                            status.write(f"Embedding chunk {i+1}/{len(all_chunks)}...")
+                            safe = chunk[:8000]
                             result = client.models.embed_content(
-                            model="gemini-embedding-001",
-                            contents=[safe_text]
+                                model="gemini-embedding-exp-03-07",
+                                contents=[safe]
                             )
                             emb = result.embeddings[0]
-                            if hasattr(emb, 'values'):
-                                embeddings.append(np.array(emb.values, dtype=np.float32))
-                            else:
-                                embeddings.append(np.array(emb, dtype=np.float32))
+                            val = emb.values if hasattr(emb, 'values') else emb
+                            embeddings.append(np.array(val, dtype=np.float32))
                         except Exception as e:
-                            st.error(f"Embedding error on chunk {i}: {e}")
+                            st.error(f"Embed error chunk {i}: {e}")
+                        emb_progress.progress((i + 1) / len(all_chunks))
 
-                        embed_progress.progress((i + 1) / len(all_chunks))
+                    status.empty()
 
                     if embeddings:
-                        st.session_state['embeddings'] = embeddings
-                        st.session_state['chunks'] = all_chunks
-                        st.session_state['file_stats'] = file_stats
-                        st.session_state['ready'] = True
-                        st.success(f"✅ Ready! Processed {len(uploaded_files)} file(s) into {len(all_chunks)} chunks.")
-                    else:
-                        st.error("❌ Failed to create embeddings.")
+                        st.session_state.embeddings = embeddings
+                        st.session_state.chunks = all_chunks
+                        st.session_state.file_stats = file_stats
+                        st.session_state.ready = True
+                        st.success(f"✅ Ready! {len(uploaded_files)} files → {len(all_chunks)} chunks")
 
-        # Show file stats
-        if 'file_stats' in st.session_state:
-            st.subheader("📊 Documents")
-            for stat in st.session_state['file_stats']:
-                st.write(f"**{stat['name']}** — {stat['pages']} pages, {stat['chunks']} chunks")
+        # Show stats
+        if "file_stats" in st.session_state:
+            for s in st.session_state.file_stats:
+                st.write(f"📄 {s['name']} — {s['pages']} pages → {s['chunks']} chunks")
 
-        # Question section
-        if st.session_state.get('ready', False):
+        # Q&A
+        if st.session_state.get("ready"):
             st.divider()
-            st.subheader("❓ Ask Your Documents")
-
-            question = st.text_input(
-                "Type your question here:",
-                placeholder="e.g., What are the main findings?"
-            )
+            question = st.text_input("❓ Ask a question about your documents:")
 
             if question:
-                with st.spinner("🔎 Searching and generating answer..."):
+                with st.spinner("Thinking..."):
                     try:
                         # Embed question
-                        safe_q = question[:8000] if len(question) > 8000 else question
-                        q_result = client.models.embed_content(
+                        q_res = client.models.embed_content(
                             model="gemini-embedding-exp-03-07",
-                            contents=[safe_q]
+                            contents=[question[:8000]]
                         )
-                        q_emb = q_result.embeddings[0]
-                        if hasattr(q_emb, 'values'):
-                            q_emb = np.array(q_emb.values, dtype=np.float32)
-                        else:
-                            q_emb = np.array(q_emb, dtype=np.float32)
+                        q_emb = q_res.embeddings[0]
+                        q_vec = np.array(q_emb.values if hasattr(q_emb, 'values') else q_emb, dtype=np.float32)
 
-                        # Find top 3 similar chunks
-                        similarities = []
-                        for emb in st.session_state['embeddings']:
-                            sim = np.dot(q_emb, emb) / (np.linalg.norm(q_emb) * np.linalg.norm(emb))
-                            similarities.append(sim)
+                        # Find top 3
+                        sims = []
+                        for emb in st.session_state.embeddings:
+                            sim = np.dot(q_vec, emb) / (np.linalg.norm(q_vec) * np.linalg.norm(emb))
+                            sims.append(sim)
 
-                        top_indices = np.argsort(similarities)[-3:][::-1]
-
-                        # Build context
-                        relevant_chunks = [st.session_state['chunks'][i] for i in top_indices]
-                        context = "\n\n---\n\n".join(relevant_chunks)
+                        top_idx = np.argsort(sims)[-3:][::-1]
+                        context = "\n\n---\n\n".join([st.session_state.chunks[i] for i in top_idx])
 
                         # Generate answer
-                        prompt = f"""You are a helpful study assistant. Answer the question using ONLY the information provided in the context below.
-If the answer is not found in the context, say: "I don't have enough information in the uploaded documents to answer this."
+                        prompt = f"""Answer using ONLY the context below. If not found, say "I don't have that information."
 
-=== CONTEXT ===
+Context:
 {context}
 
-=== QUESTION ===
-{question}
+Question: {question}
 
-=== ANSWER ==="""
+Answer:"""
 
-                        response = client.models.generate_content(
+                        ans = client.models.generate_content(
                             model="gemini-2.0-flash",
                             contents=prompt
                         )
 
                         st.markdown("### 💡 Answer")
-                        st.info(response.text)
+                        st.info(ans.text)
 
-                        with st.expander("📄 View source chunks"):
-                            for i, idx in enumerate(top_indices):
-                                chunk = st.session_state['chunks'][idx]
-                                score = similarities[idx]
-                                st.markdown(f"**Chunk {i+1}** (score: {score:.3f})")
-                                st.text(chunk[:800] + ("..." if len(chunk) > 800 else ""))
-                                st.divider()
-
+                        with st.expander("📄 Source chunks"):
+                            for i, idx in enumerate(top_idx):
+                                st.markdown(f"**Chunk {i+1}** (score: {sims[idx]:.3f})")
+                                st.text(st.session_state.chunks[idx][:600])
                     except Exception as e:
-                        st.error(f"❌ Error during Q&A: {e}")
+                        st.error(f"Q&A Error: {e}")
+
