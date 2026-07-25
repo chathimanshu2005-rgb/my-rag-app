@@ -147,8 +147,8 @@ else:
                         try:
                             safe_text = chunk[:8000] if len(chunk) > 8000 else chunk
                             result = client.models.embed_content(
-                                model="gemini-embedding-exp-03-07",
-                                contents=[safe_text]
+                            model="gemini-embedding-001",
+                            contents=[safe_text]
                             )
                             emb = result.embeddings[0]
                             if hasattr(emb, 'values'):
