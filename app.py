@@ -1,119 +1,45 @@
 import streamlit as st
+from google import genai
+from pypdf import PdfReader
+import numpy as np
 
 st.set_page_config(page_title="My RAG App", page_icon="📚", layout="centered")
 st.title("📚 My Free RAG Application")
 
-# ========== SAFE IMPORTS ==========
-import os
-import numpy as np
-
-# Try importing google-genai safely
-genai_import_error = None
-try:
-    from google import genai
-except Exception as e:
-    genai_import_error = str(e)
-
-# Try importing pypdf safely
-pypdf_import_error = None
-try:
-    from pypdf import PdfReader
-except Exception as e:
-    pypdf_import_error = str(e)
-
 # ========== API KEY ==========
+import os
+
 api_key = None
 client = None
-api_error = None
 
 try:
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
-except Exception as e:
-    api_error = f"Secrets error: {e}"
+except Exception:
+    pass
 
 if not api_key:
     api_key = os.getenv("GEMINI_API_KEY")
 
-if api_key and genai_import_error is None:
+if api_key:
     try:
         client = genai.Client(api_key=api_key)
     except Exception as e:
-        api_error = f"Client creation failed: {e}"
+        st.sidebar.error(f"API Error: {e}")
 
-# ========== SIDEBAR STATUS ==========
+# ========== SIDEBAR ==========
 with st.sidebar:
-    st.header("🔌 System Status")
-
-    if genai_import_error:
-        st.error(f"❌ google-genai import failed: {genai_import_error}")
-    else:
-        st.success("✅ google-genai imported")
-
-    if pypdf_import_error:
-        st.error(f"❌ pypdf import failed: {pypdf_import_error}")
-    else:
-        st.success("✅ pypdf imported")
-
-    if api_key:
-        st.success(f"✅ API key found ({api_key[:8]}...)")
-    else:
-        st.error("❌ API key missing")
-
+    st.header("🔌 Status")
     if client:
-        st.success("✅ Gemini client ready")
-    elif api_key and genai_import_error is None:
-        st.error(f"❌ Gemini client failed: {api_error}")
-
-    if not api_key:
-        st.markdown("""
-        **How to add API key:**
-        1. Go to [share.streamlit.io](https://share.streamlit.io)
-        2. Click ⋮ → Settings → Secrets
-        3. Paste exactly:
-        ```
-        GEMINI_API_KEY = "your-key-here"
-        ```
-        4. Save & Reboot
-        """)
+        st.success("✅ Gemini Connected")
+    else:
+        st.error("❌ No API Key")
+        st.markdown("Add in Streamlit Cloud: Settings → Secrets → `GEMINI_API_KEY = "your-key"`")
 
 # ========== MAIN APP ==========
-
-# If anything is broken, show diagnostic page
-if genai_import_error or pypdf_import_error or not client:
-    st.warning("⚠️ App is in diagnostic mode — some features are disabled.")
-
-    if genai_import_error:
-        st.error("**google-genai failed to import.** This usually means:")
-        st.markdown("""
-        - Your `requirements.txt` has the wrong package name
-        - It should say: `google-genai>=1.0.0` (NOT `google-generativeai`)
-        """)
-
-    if not api_key:
-        st.error("**No API key found.** Check Streamlit Cloud Secrets.")
-
-    if api_error and api_key:
-        st.error(f"**API connection failed:** {api_error}")
-
-    st.info("Fix the issues above, then reboot the app.")
-
-    # Still show the uploader so they can test PDF reading
-    if pypdf_import_error is None:
-        st.divider()
-        st.subheader("📄 PDF Test (no AI needed)")
-        test_pdf = st.file_uploader("Upload a PDF to test extraction:", type=['pdf'])
-        if test_pdf:
-            try:
-                reader = PdfReader(test_pdf)
-                text = "\n".join([p.extract_text() or "" for p in reader.pages])
-                st.success(f"✅ Extracted {len(text)} characters from {len(reader.pages)} pages")
-                st.text(text[:500] + "...")
-            except Exception as e:
-                st.error(f"PDF read failed: {e}")
-
+if not client:
+    st.warning("⚠️ Please add your Gemini API key in Streamlit Cloud Secrets.")
 else:
-    # ========== FULL RAG APP ==========
     uploaded_files = st.file_uploader(
         "📄 Upload PDF files",
         type=['pdf'],
@@ -122,12 +48,6 @@ else:
 
     if not uploaded_files:
         st.info("👆 Upload PDF files to get started")
-        st.markdown("""
-        ### How it works:
-        1. Upload your PDF documents
-        2. Click "Process Documents"
-        3. Ask questions — answers come from YOUR documents only
-        """)
     else:
         if st.button("🚀 Process Documents", type="primary"):
             with st.spinner("Processing..."):
@@ -172,11 +92,15 @@ else:
                     for i, chunk in enumerate(all_chunks):
                         try:
                             status.write(f"Embedding chunk {i+1}/{len(all_chunks)}...")
-                            safe = chunk[:8000]
+
+                            # Truncate chunk to 8000 chars for safety
+                            chunk_text = chunk[:8000]
+
                             result = client.models.embed_content(
-                            model="text-embedding-004",
-                            contents=[safe_text]
+                                model="text-embedding-004",
+                                contents=[chunk_text]
                             )
+
                             emb = result.embeddings[0]
                             val = emb.values if hasattr(emb, 'values') else emb
                             embeddings.append(np.array(val, dtype=np.float32))
@@ -192,13 +116,13 @@ else:
                         st.session_state.file_stats = file_stats
                         st.session_state.ready = True
                         st.success(f"✅ Ready! {len(uploaded_files)} files → {len(all_chunks)} chunks")
+                    else:
+                        st.error("❌ Failed to create embeddings.")
 
-        # Show stats
         if "file_stats" in st.session_state:
             for s in st.session_state.file_stats:
                 st.write(f"📄 {s['name']} — {s['pages']} pages → {s['chunks']} chunks")
 
-        # Q&A
         if st.session_state.get("ready"):
             st.divider()
             question = st.text_input("❓ Ask a question about your documents:")
@@ -207,14 +131,15 @@ else:
                 with st.spinner("Thinking..."):
                     try:
                         # Embed question
+                        q_text = question[:8000]
                         q_res = client.models.embed_content(
-                            model="gemini-embedding-exp-03-07",
-                            contents=[question[:8000]]
+                            model="text-embedding-004",
+                            contents=[q_text]
                         )
                         q_emb = q_res.embeddings[0]
                         q_vec = np.array(q_emb.values if hasattr(q_emb, 'values') else q_emb, dtype=np.float32)
 
-                        # Find top 3
+                        # Find top 3 similar chunks
                         sims = []
                         for emb in st.session_state.embeddings:
                             sim = np.dot(q_vec, emb) / (np.linalg.norm(q_vec) * np.linalg.norm(emb))
@@ -247,4 +172,3 @@ Answer:"""
                                 st.text(st.session_state.chunks[idx][:600])
                     except Exception as e:
                         st.error(f"Q&A Error: {e}")
-
