@@ -174,8 +174,8 @@ else:
                             status.write(f"Embedding chunk {i+1}/{len(all_chunks)}...")
                             safe = chunk[:8000]
                             result = client.models.embed_content(
-                                model="gemini-embedding-exp-03-07",
-                                contents=[safe]
+                            model="text-embedding-004",
+                            contents=[safe_text]
                             )
                             emb = result.embeddings[0]
                             val = emb.values if hasattr(emb, 'values') else emb
