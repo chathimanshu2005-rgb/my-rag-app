@@ -1,53 +1,82 @@
 import streamlit as st
-from google import genai
 from pypdf import PdfReader
 import numpy as np
-import time
+from fastembed import TextEmbedding
+from groq import Groq
 
 st.set_page_config(page_title="My RAG App", page_icon="📚", layout="centered")
 st.title("📚 My Free RAG Application")
 
-# ========== API KEY ==========
+# ========== API KEYS ==========
 import os
 
-api_key = None
-client = None
+groq_key = None
+groq_client = None
 
 try:
-    if "GEMINI_API_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_API_KEY"]
+    if "GROQ_API_KEY" in st.secrets:
+        groq_key = st.secrets["GROQ_API_KEY"]
 except Exception:
     pass
 
-if not api_key:
-    api_key = os.getenv("GEMINI_API_KEY")
+if not groq_key:
+    groq_key = os.getenv("GROQ_API_KEY")
 
-if api_key:
+if groq_key:
     try:
-        client = genai.Client(api_key=api_key)
+        groq_client = Groq(api_key=groq_key)
     except Exception as e:
-        st.sidebar.error(f"API Error: {e}")
+        st.sidebar.error(f"Groq Error: {e}")
+
+# ========== LOCAL EMBEDDING MODEL ==========
+@st.cache_resource
+def load_embedder():
+    with st.spinner("Downloading embedding model (22MB, one-time)..."):
+        return TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+
+embedder = None
+try:
+    embedder = load_embedder()
+except Exception as e:
+    st.sidebar.error(f"Embedder Error: {e}")
 
 # ========== SIDEBAR ==========
 with st.sidebar:
     st.header("🔌 Status")
-    if client:
-        st.success("✅ Gemini Connected")
+    if groq_client:
+        st.success("✅ Groq Connected")
     else:
-        st.error("❌ No API Key")
-        st.markdown("Add in Streamlit Cloud: Settings → Secrets → `GEMINI_API_KEY = \\\"your-key\\\"`")
+        st.error("❌ No Groq API Key")
+        st.markdown("Get free key at console.groq.com")
+    
+    if embedder:
+        st.success("✅ Local Embedder Ready")
+    else:
+        st.error("❌ Embedder failed")
     
     st.divider()
     st.markdown("""
-    ### ⏱️ Free Tier Limits
-    - **15 requests per minute**
-    - **1,500 requests per day**
-    - If you see "Quota exceeded", wait 30-60 seconds and try again
+    ### ⏱️ Limits
+    - **Groq**: 30 requests/minute (free tier)
+    - **Embeddings**: Unlimited (runs locally!)
+    - No credit card needed
     """)
 
 # ========== MAIN APP ==========
-if not client:
-    st.warning("⚠️ Please add your Gemini API key in Streamlit Cloud Secrets.")
+if not groq_client or not embedder:
+    st.warning("⚠️ Setup Required")
+    st.markdown("""
+    ### Step 1: Get Groq API Key (Free, No Credit Card)
+    1. Go to https://console.groq.com
+    2. Sign up with email or Google
+    3. Click "API Keys" → "Create API Key"
+    4. Copy your key
+    
+    ### Step 2: Add to Streamlit Cloud Secrets
+    1. Go to share.streamlit.io → your app → Settings → Secrets
+    2. Add: `GROQ_API_KEY = "your-key"`
+    3. Save & Reboot
+    """)
 else:
     uploaded_files = st.file_uploader(
         "📄 Upload PDF files",
@@ -92,58 +121,22 @@ else:
                 if not all_chunks:
                     st.error("No text extracted. Try text-based PDFs.")
                 else:
-                    embeddings = []
-                    emb_progress = st.progress(0)
                     status = st.empty()
+                    status.write("Creating embeddings locally (no API calls, no rate limits)...")
                     
-                    for i, chunk in enumerate(all_chunks):
-                        try:
-                            status.write(f"Embedding chunk {i+1}/{len(all_chunks)}...")
-                            chunk_text = chunk[:8000]
-                            
-                            result = client.models.embed_content(
-                                model="gemini-embedding-2",
-                                contents=[chunk_text]
-                            )
-                            
-                            emb = result.embeddings[0]
-                            val = emb.values if hasattr(emb, 'values') else emb
-                            embeddings.append(np.array(val, dtype=np.float32))
-                            
-                            # ========== FIX: Sleep to avoid rate limit ==========
-                            time.sleep(0.5)
-                            
-                        except Exception as e:
-                            error_msg = str(e)
-                            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                                st.warning(f"⏳ Rate limit hit on chunk {i}. Waiting 30 seconds...")
-                                time.sleep(30)
-                                # Retry once
-                                try:
-                                    result = client.models.embed_content(
-                                        model="gemini-embedding-2",
-                                        contents=[chunk_text]
-                                    )
-                                    emb = result.embeddings[0]
-                                    val = emb.values if hasattr(emb, 'values') else emb
-                                    embeddings.append(np.array(val, dtype=np.float32))
-                                except Exception as e2:
-                                    st.error(f"Retry failed for chunk {i}: {e2}")
-                            else:
-                                st.error(f"Embed error chunk {i}: {e}")
+                    try:
+                        emb_generator = embedder.embed(all_chunks)
+                        embeddings_list = list(emb_generator)
+                        embeddings = np.array(embeddings_list, dtype=np.float32)
                         
-                        emb_progress.progress((i + 1) / len(all_chunks))
-                    
-                    status.empty()
-                    
-                    if embeddings:
                         st.session_state.embeddings = embeddings
                         st.session_state.chunks = all_chunks
                         st.session_state.file_stats = file_stats
                         st.session_state.ready = True
+                        status.empty()
                         st.success(f"✅ Ready! {len(uploaded_files)} files → {len(all_chunks)} chunks")
-                    else:
-                        st.error("❌ Failed to create embeddings.")
+                    except Exception as e:
+                        st.error(f"Embedding failed: {e}")
         
         if "file_stats" in st.session_state:
             for s in st.session_state.file_stats:
@@ -156,15 +149,8 @@ else:
             if question:
                 with st.spinner("Thinking..."):
                     try:
-                        q_text = question[:8000]
-                        
-                        q_res = client.models.embed_content(
-                            model="gemini-embedding-2",
-                            contents=[q_text]
-                        )
-                        
-                        q_emb = q_res.embeddings[0]
-                        q_vec = np.array(q_emb.values if hasattr(q_emb, 'values') else q_emb, dtype=np.float32)
+                        q_emb_generator = embedder.embed([question])
+                        q_vec = np.array(list(q_emb_generator)[0], dtype=np.float32)
                         
                         sims = []
                         for emb in st.session_state.embeddings:
@@ -183,13 +169,15 @@ Question: {question}
 
 Answer:"""
                         
-                        ans = client.models.generate_content(
-                            model="gemini-2.0-flash",
-                            contents=prompt
+                        chat_completion = groq_client.chat.completions.create(
+                            messages=[{"role": "user", "content": prompt}],
+                            model="llama-3.3-70b-versatile",
+                            temperature=0.3,
+                            max_tokens=1024
                         )
                         
                         st.markdown("### 💡 Answer")
-                        st.info(ans.text)
+                        st.info(chat_completion.choices[0].message.content)
                         
                         with st.expander("📄 Source chunks"):
                             for i, idx in enumerate(top_idx):
@@ -198,20 +186,7 @@ Answer:"""
                     
                     except Exception as e:
                         error_msg = str(e)
-                        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                            st.error("""
-                            ⏳ **Rate Limit Reached!**
-                            
-                            The free Gemini tier allows about **15 requests per minute**.
-                            You just hit that limit.
-                            
-                            **What to do:**
-                            1. Wait **30-60 seconds**
-                            2. Click your question again
-                            3. It will work!
-                            
-                            **Tip:** For big PDFs, the app makes many embedding calls. 
-                            Wait a minute after "Process Documents" before asking questions.
-                            """)
+                        if "429" in error_msg:
+                            st.error("⏳ Groq rate limit (30/min). Wait a few seconds and try again.")
                         else:
                             st.error(f"Q&A Error: {e}")
