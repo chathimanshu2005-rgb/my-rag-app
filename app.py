@@ -2,6 +2,7 @@ import streamlit as st
 from google import genai
 from pypdf import PdfReader
 import numpy as np
+import time
 
 st.set_page_config(page_title="My RAG App", page_icon="📚", layout="centered")
 st.title("📚 My Free RAG Application")
@@ -35,6 +36,14 @@ with st.sidebar:
     else:
         st.error("❌ No API Key")
         st.markdown("Add in Streamlit Cloud: Settings → Secrets → `GEMINI_API_KEY = \\\"your-key\\\"`")
+    
+    st.divider()
+    st.markdown("""
+    ### ⏱️ Free Tier Limits
+    - **15 requests per minute**
+    - **1,500 requests per day**
+    - If you see "Quota exceeded", wait 30-60 seconds and try again
+    """)
 
 # ========== MAIN APP ==========
 if not client:
@@ -66,7 +75,6 @@ else:
                         full_text = "\n\n".join(text_parts)
                         pages = len(reader.pages)
                         
-                        # Split into chunks
                         chunks = []
                         start = 0
                         while start < len(full_text):
@@ -84,7 +92,6 @@ else:
                 if not all_chunks:
                     st.error("No text extracted. Try text-based PDFs.")
                 else:
-                    # Create embeddings
                     embeddings = []
                     emb_progress = st.progress(0)
                     status = st.empty()
@@ -94,7 +101,6 @@ else:
                             status.write(f"Embedding chunk {i+1}/{len(all_chunks)}...")
                             chunk_text = chunk[:8000]
                             
-                            # ========== CORRECTED: Use gemini-embedding-2 ==========
                             result = client.models.embed_content(
                                 model="gemini-embedding-2",
                                 contents=[chunk_text]
@@ -103,8 +109,29 @@ else:
                             emb = result.embeddings[0]
                             val = emb.values if hasattr(emb, 'values') else emb
                             embeddings.append(np.array(val, dtype=np.float32))
+                            
+                            # ========== FIX: Sleep to avoid rate limit ==========
+                            time.sleep(0.5)
+                            
                         except Exception as e:
-                            st.error(f"Embed error chunk {i}: {e}")
+                            error_msg = str(e)
+                            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                                st.warning(f"⏳ Rate limit hit on chunk {i}. Waiting 30 seconds...")
+                                time.sleep(30)
+                                # Retry once
+                                try:
+                                    result = client.models.embed_content(
+                                        model="gemini-embedding-2",
+                                        contents=[chunk_text]
+                                    )
+                                    emb = result.embeddings[0]
+                                    val = emb.values if hasattr(emb, 'values') else emb
+                                    embeddings.append(np.array(val, dtype=np.float32))
+                                except Exception as e2:
+                                    st.error(f"Retry failed for chunk {i}: {e2}")
+                            else:
+                                st.error(f"Embed error chunk {i}: {e}")
+                        
                         emb_progress.progress((i + 1) / len(all_chunks))
                     
                     status.empty()
@@ -131,7 +158,6 @@ else:
                     try:
                         q_text = question[:8000]
                         
-                        # ========== CORRECTED: Use gemini-embedding-2 for query too ==========
                         q_res = client.models.embed_content(
                             model="gemini-embedding-2",
                             contents=[q_text]
@@ -140,36 +166,5 @@ else:
                         q_emb = q_res.embeddings[0]
                         q_vec = np.array(q_emb.values if hasattr(q_emb, 'values') else q_emb, dtype=np.float32)
                         
-                        # Find top 3 similar chunks
                         sims = []
-                        for emb in st.session_state.embeddings:
-                            sim = np.dot(q_vec, emb) / (np.linalg.norm(q_vec) * np.linalg.norm(emb))
-                            sims.append(sim)
-                        
-                        top_idx = np.argsort(sims)[-3:][::-1]
-                        context = "\n\n---\n\n".join([st.session_state.chunks[i] for i in top_idx])
-                        
-                        # Generate answer
-                        prompt = f"""Answer using ONLY the context below. If not found, say "I don't have that information."
-
-Context:
-{context}
-
-Question: {question}
-
-Answer:"""
-                        
-                        ans = client.models.generate_content(
-                            model="gemini-2.0-flash",
-                            contents=prompt
-                        )
-                        
-                        st.markdown("### 💡 Answer")
-                        st.info(ans.text)
-                        
-                        with st.expander("📄 Source chunks"):
-                            for i, idx in enumerate(top_idx):
-                                st.markdown(f"**Chunk {i+1}** (score: {sims[idx]:.3f})")
-                                st.text(st.session_state.chunks[idx][:600])
-                    except Exception as e:
-                        st.error(f"Q&A Error: {e}")
+                        for emb in st.session_state
